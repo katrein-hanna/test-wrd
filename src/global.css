@@ -1,0 +1,99 @@
+@import "tailwindcss";
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
+
+@theme {
+  --color-wrd-cream: #f6f1e9;
+  --color-wrd-brown: #7B542F;
+  --color-wrd-gold:  #fff0b9;
+  --color-wrd-amber: #FF9D00;
+  --color-wrd-honey: #FFCF71;
+  --color-wrd-darkBrown : #3d2519;
+  --color-wrd-secondary: #cbaf87;
+}
+
+
+@font-face {
+  font-family: "PersianSols2";
+  src:
+    url("/fonts/persian-sols2.woff2") format("woff2"),
+    url("/fonts/persian-sols2.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --font-body: system-ui, -apple-system, "Segoe UI", Tahoma, Arial, "Noto Sans Arabic", sans-serif;
+  --font-display: "PersianSols2", serif;
+  --font-ar: "PersianSols2", sans-serif;
+  --font-en: "Inter", sans-serif;
+  --wrd-popDur: 1.15s;
+  --wrd-hold: 900ms;
+  --wrd-fade: 550ms;
+}
+
+html, body {
+  font-family: var(--font-body);
+}
+
+.font-display{
+  font-family: var(--font-display);
+  font-synthesis: weight;
+}
+
+
+/* ✅ Splash: logo pop keyframes (EXACT motion) */
+@keyframes wrd-splashPop{
+  0%   { opacity: 0; transform: scale(.12); }
+  20%  { opacity: 1; transform: scale(.30); }
+  70%  { opacity: 1; transform: scale(1.06); }
+  100% { opacity: 1; transform: scale(1.00); }
+}
+
+@layer utilities{
+  .animate-wrd-splashPop{
+    opacity: 0;
+    transform: scale(.12);
+    transform-origin: 50% 50%;
+    will-change: transform, opacity;
+    animation: wrd-splashPop var(--wrd-popDur) cubic-bezier(.22,1,.36,1) forwards;
+  }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .animate-wrd-splashPop {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+@layer utilities {
+
+
+  .wrd-outline-small{
+    text-shadow: 0 10px 18px rgba(0,0,0,.22);
+  }
+
+  .bg-menuBG { background: #fdfaf6; }
+.text-menuTitle { color: #2a2a2a; font-family: serif; }
+.shadow-menu { box-shadow: 0 4px 10px rgba(0,0,0,0.08); }
+}
+
+/* A soft luxe background for the header */
+.wrd-hero-bg{
+  background:
+    radial-gradient(900px 420px at 18% 12%, rgba(199,168,106,.22), transparent 60%),
+    radial-gradient(680px 420px at 86% 18%, rgba(31,59,44,.16), transparent 55%),
+    linear-gradient(180deg, rgba(246,241,232,1), rgba(239,231,219,1));
+}
+
+/* Subtle noise (no external images) */
+.wrd-hero-noise{
+  background-image:
+    radial-gradient(rgba(0,0,0,.35) 1px, transparent 1px);
+  background-size: 26px 26px;
+  mix-blend-mode: soft-light;
+}
+
