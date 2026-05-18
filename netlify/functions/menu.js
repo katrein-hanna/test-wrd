@@ -125,12 +125,12 @@ function buildMenu(categoriesCsv, itemsCsv) {
 }
 
 export const handler = async () => {
-  const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
-  if (!GOOGLE_SHEET_ID) {
+  const SHEETS_ID = process.env.SHEETS_ID;
+  if (!SHEETS_ID ) {
     return {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: "Missing GOOGLE_SHEET_ID env var" }),
+      body: JSON.stringify({ message: "Missing SHEETS_ID env var" }),
     };
   }
 
@@ -144,8 +144,8 @@ export const handler = async () => {
     if (!inFlight) {
       inFlight = (async () => {
         const [catsCsv, itemsCsv] = await Promise.all([
-          fetchSheetCsv(GOOGLE_SHEET_ID, "Categories"),
-          fetchSheetCsv(GOOGLE_SHEET_ID, "Menu Items"),
+          fetchSheetCsv(SHEETS_ID , "Categories"),
+          fetchSheetCsv(SHEETS_ID , "Menu Items"),
         ]);
         const result = buildMenu(catsCsv, itemsCsv);
         cachedMenu = result; // ✅ آخر نتيجة ناجحة فقط
