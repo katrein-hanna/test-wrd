@@ -1,72 +1,42 @@
 /* eslint-disable no-undef */
 
-let cachedMenu = null;
-let cachedAt = 0;
+let cachedMenu = null;      // نحتفظ بآخر نتيجة ناجحة فقط كـ fallback عند الخطأ
+let inFlight = null;        // لمنع تكرار نفس الطلبات إذا صار burst
 
-const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 min
+const EDGE_TTL_SEC = 300;   // 5 دقائق على Netlify Edge
+const STALE_SEC = 60;
 
-function csvParse(text) {
-  // Simple CSV parser (handles quotes)
+function csvParse(csvText) {
+  const lines = csvText.trim().split(/\r?\n/);
+  const headers = lines.shift().split(",").map((h) => h.trim());
+
   const rows = [];
-  let row = [];
-  let cur = "";
-  let inQuotes = false;
+  for (const line of lines) {
+    const cols = [];
+    let cur = "";
+    let inQuotes = false;
 
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    const next = text[i + 1];
-
-    if (ch === '"' && inQuotes && next === '"') {
-      cur += '"';
-      i++;
-      continue;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"' && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else if (ch === '"') {
+        inQuotes = !inQuotes;
+      } else if (ch === "," && !inQuotes) {
+        cols.push(cur);
+        cur = "";
+      } else {
+        cur += ch;
+      }
     }
+    cols.push(cur);
 
-    if (ch === '"') {
-      inQuotes = !inQuotes;
-      continue;
-    }
-
-    if (ch === "," && !inQuotes) {
-      row.push(cur);
-      cur = "";
-      continue;
-    }
-
-    if ((ch === "\n" || ch === "\r") && !inQuotes) {
-      if (ch === "\r" && next === "\n") i++;
-      row.push(cur);
-      cur = "";
-      // ignore empty last line
-      if (row.some((c) => c !== "")) rows.push(row);
-      row = [];
-      continue;
-    }
-
-    cur += ch;
-  }
-
-  row.push(cur);
-  if (row.some((c) => c !== "")) rows.push(row);
-  return rows;
-}
-
-function rowsToObjects(rows) {
-  if (!rows?.length) return [];
-  const header = rows[0].map((h) => (h || "").trim());
-  const out = [];
-
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
     const obj = {};
-    header.forEach((h, idx) => {
-      obj[h] = (r?.[idx] ?? "").toString().trim();
-    });
-    // skip empty lines
-    if (Object.values(obj).every((v) => v === "")) continue;
-    out.push(obj);
+    headers.forEach((h, idx) => (obj[h] = (cols[idx] ?? "").trim()));
+    rows.push(obj);
   }
-  return out;
+  return rows;
 }
 
 function toNum(v, fallback = null) {
@@ -80,132 +50,127 @@ function toNum(v, fallback = null) {
 function toBool(v, fallback = true) {
   if (v == null) return fallback;
   const s = String(v).trim().toLowerCase();
-  if (!s) return fallback;
-  if (["true", "1", "yes", "y"].includes(s)) return true;
-  if (["false", "0", "no", "n"].includes(s)) return false;
+  if (s === "true") return true;
+  if (s === "false") return false;
   return fallback;
 }
 
-async function fetchSheetCsv(sheetId, sheetName) {
-  const url =
-    `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq` +
-    `?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+// ✅ نضيف cache-bust صغير "يتغير كل 5 دقائق" حتى نتجنب أي كاش من Google نفسه
+function sheetUrl(sheetId, sheetName) {
+  const bucket = Math.floor(Date.now() / (EDGE_TTL_SEC * 1000));
+  return `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(
+    sheetName
+  )}&_=${bucket}`;
+}
 
+async function fetchSheetCsv(sheetId, sheetName) {
+  const url = sheetUrl(sheetId, sheetName);
   const res = await fetch(url);
   if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Sheets fetch failed ${res.status}: ${t}`);
+    const txt = await res.text();
+    throw new Error(`Google Sheets ${sheetName} ${res.status}: ${txt}`);
   }
-  return await res.text();
+  return res.text();
+}
+
+function buildMenu(categoriesCsv, itemsCsv) {
+  const categoriesRows = csvParse(categoriesCsv);
+  const itemsRows = csvParse(itemsCsv);
+
+  // categories: category_id, group, title_ar, title_en, note_ar, note_en, sort_order
+  const categories = categoriesRows
+    .filter((r) => r.category_id)
+    .map((r) => ({
+      id: String(r.category_id).trim(),
+      group: r.group || "",
+      title: { ar: r.title_ar || "", en: r.title_en || "" },
+      note: { ar: r.note_ar || "", en: r.note_en || "" },
+      sort_order: toNum(r.sort_order, 9999),
+      items: [],
+    }));
+
+  const byId = new Map(categories.map((c) => [c.id, c]));
+
+  // items: item_id, category_id, name_ar, name_en, desc_ar, desc_en, price, available
+  for (const it of itemsRows) {
+    const catId = String(it.category_id || "").trim();
+    if (!catId) continue;
+
+    const target = byId.get(catId);
+    if (!target) continue;
+
+    // تجاهل صفوف فاضية تماماً (ممكن تبقى آثار حذف)
+    const nameAr = it.name_ar || "";
+    const nameEn = it.name_en || "";
+    if (!nameAr && !nameEn) continue;
+
+    target.items.push({
+      item_id: it.item_id ? toNum(it.item_id, null) : null,
+      name: { ar: nameAr, en: nameEn },
+      desc: { ar: it.desc_ar || "", en: it.desc_en || "" },
+      price: toNum(it.price, null),
+      available: toBool(it.available, true),
+    });
+  }
+
+  categories.sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
+
+  return categories.map((c) => ({
+    id: c.id,
+    group: c.group,
+    title: c.title,
+    note: c.note,
+    items: c.items,
+  }));
 }
 
 export const handler = async () => {
-  const SHEETS_ID = process.env.SHEETS_ID;
-  const TTL_MS = Number(process.env.MENU_CACHE_TTL_MS || DEFAULT_TTL_MS);
-
-  if (!SHEETS_ID) {
+  const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
+  if (!GOOGLE_SHEET_ID) {
     return {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: "Missing env var: SHEETS_ID" }),
+      body: JSON.stringify({ message: "Missing GOOGLE_SHEET_ID env var" }),
     };
   }
 
-  const now = Date.now();
-  const cacheValid = cachedMenu && now - cachedAt < TTL_MS;
-
-  if (cacheValid) {
-    return {
-      statusCode: 200,
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "Cache-Control": `public, s-maxage=${Math.floor(
-          TTL_MS / 1000
-        )}, stale-while-revalidate=60`,
-        "X-Menu-Cache": "HIT",
-      },
-      body: JSON.stringify(cachedMenu),
-    };
-  }
+  const baseHeaders = {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": `public, s-maxage=${EDGE_TTL_SEC}, stale-while-revalidate=${STALE_SEC}`,
+  };
 
   try {
-    const [catsCsv, itemsCsv] = await Promise.all([
-      fetchSheetCsv(SHEETS_ID, "Categories"),
-      fetchSheetCsv(SHEETS_ID, "Menu Items"),
-    ]);
-
-    const catsRows = csvParse(catsCsv);
-    const itemsRows = csvParse(itemsCsv);
-
-    const cats = rowsToObjects(catsRows);
-    const items = rowsToObjects(itemsRows);
-
-    // Build categories map
-    const byId = new Map();
-
-    const categories = cats.map((c) => {
-      const id = c.category_id;
-      const cat = {
-        id,
-        group: c.group || "",
-        title: { ar: c.title_ar || "", en: c.title_en || "" },
-        note: { ar: c.note_ar || "", en: c.note_en || "" },
-        sort_order: toNum(c.sort_order, 9999),
-        items: [],
-      };
-      byId.set(id, cat);
-      return cat;
-    });
-
-    // Attach items (✅ بدون sort_order للعناصر)
-    for (const it of items) {
-      const catId = it.category_id;
-      const target = byId.get(catId);
-      if (!target) continue;
-
-      target.items.push({
-        item_id: it.item_id || null,
-        name: { ar: it.name_ar || "", en: it.name_en || "" },
-        desc: { ar: it.desc_ar || "", en: it.desc_en || "" },
-        price: toNum(it.price, null),
-        available: toBool(it.available, true),
+    // ✅ منع burst: إذا في طلب جاري، استنى نتيجته بدل ما تعمل طلبات جديدة على Google
+    if (!inFlight) {
+      inFlight = (async () => {
+        const [catsCsv, itemsCsv] = await Promise.all([
+          fetchSheetCsv(GOOGLE_SHEET_ID, "Categories"),
+          fetchSheetCsv(GOOGLE_SHEET_ID, "Menu Items"),
+        ]);
+        const result = buildMenu(catsCsv, itemsCsv);
+        cachedMenu = result; // ✅ آخر نتيجة ناجحة فقط
+        return result;
+      })().finally(() => {
+        inFlight = null;
       });
     }
 
-    // sort categories only
-    categories.sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
-
-    const result = categories.map((c) => ({
-      id: c.id,
-      group: c.group,
-      title: c.title,
-      note: c.note,
-      items: c.items,
-    }));
-
-    cachedMenu = result;
-    cachedAt = now;
+    const result = await inFlight;
 
     return {
       statusCode: 200,
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "Cache-Control": `public, s-maxage=${Math.floor(
-          TTL_MS / 1000
-        )}, stale-while-revalidate=60`,
-        "X-Menu-Cache": "MISS",
-      },
+      headers: { ...baseHeaders, "X-Menu-Cache": "ORIGIN" },
       body: JSON.stringify(result),
     };
   } catch (e) {
-    // إذا في كاش قديم رجّعه حتى ما تتعطل المنيو
+    // ✅ لو صار خطأ بجوجل، رجّع آخر نتيجة ناجحة حتى ما تتعطل المنيو
     if (cachedMenu) {
       return {
         statusCode: 200,
         headers: {
-          "Content-Type": "application/json; charset=utf-8",
+          ...baseHeaders,
           "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60",
-          "X-Menu-Cache": "STALE",
+          "X-Menu-Cache": "STALE-FALLBACK",
         },
         body: JSON.stringify(cachedMenu),
       };
